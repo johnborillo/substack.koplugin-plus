@@ -520,12 +520,23 @@ function SubstackReader:renderPost(post, pub_name, subdomain)
 
         local local_name = string.format("img_%03d.%s", image_count, ext)
         local local_path = post_img_dir .. "/" .. local_name
+        local local_rel_path = post_img_dir_name .. "/" .. local_name
 
         if self.api:downloadFile(download_url, local_path) then
-            return string.format('<img src="%s/%s">', post_img_dir_name, local_name)
+            return string.format('<img src="%s">', local_rel_path)
         end
         return string.format('<img src="%s">', url)
     end)
+
+    -- Strip wrapping <a> tags from images to trigger KOReader's internal viewer popup.
+    -- This avoids opening the image as a separate document.
+    content = content:gsub('(<a[^>]-href=["\'])([^"\']-)(["\'][^>]->)([%s%S]-)(</a>)',
+        function(a_start, a_href, a_end_tag, a_inner, a_close)
+            if a_inner:find('<img') then
+                return a_inner -- Return only the content, stripping the <a> and </a>
+            end
+            return a_start .. a_href .. a_end_tag .. a_inner .. a_close
+        end)
 
     if content == "" then
         content = p.audience == "only_paid" and _("<p><i>(Post is paywalled. Check cookie.)</i></p>") or
