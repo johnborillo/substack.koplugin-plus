@@ -12,7 +12,6 @@ local lfs = require("libs/libkoreader-lfs")
 local JSON = (package.loaded["json"] or (pcall(require, "json") and require("json")) or require("util").json)
 
 local READER_CSS = [[<style>
-    body { font-family: sans-serif; line-height: 1.6; padding: 1em; margin: 0; }
     .header-title { text-align: center; font-size: 1.5em; font-weight: bold; margin: 0 0 0.5em 0; padding: 0; }
     .header-subtitle { text-align: center; font-size: 1.1em; font-weight: normal; font-style: italic; color: #666; margin: 0 0 1em 0; }
     .publication { display: block; text-align: center; font-weight: bold; color: #555; margin: 0 0 2em 0; text-transform: uppercase; font-size: 0.9em; }
@@ -20,7 +19,6 @@ local READER_CSS = [[<style>
     blockquote { border-left: 4px solid #eee; padding-left: 1.5em; margin-left: 0; color: #444; font-style: italic; }
     pre { background: #f9f9f9; padding: 1em; overflow-x: auto; border-radius: 4px; font-family: monospace; }
     hr { border: 0; border-top: 1px solid #eee; margin: 3em 0; }
-    p { margin-bottom: 1.2em; text-align: justify; }
 </style>]]
 
 local SubstackReader = WidgetContainer:extend {
@@ -134,7 +132,7 @@ function SubstackReader:onSubstackMain()
         },
         {
             text = self.settings.subscription_sort == "updated" and _("Sort Subscriptions: Recent Update") or
-            _("Sort Subscriptions: Alphabetical"),
+                _("Sort Subscriptions: Alphabetical"),
             callback = function()
                 self.settings.subscription_sort = (self.settings.subscription_sort == "updated") and "alpha" or "updated"
                 self:saveSettings()
