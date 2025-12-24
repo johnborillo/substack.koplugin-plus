@@ -37,11 +37,12 @@ end
 
 function SubstackAPI:parseUrl(url)
     if not url or type(url) ~= "string" then return nil end
-    local scheme, netloc, path = url:match("^(https?://)([^/]+)(/?.*)$")
+    local scheme, netloc, path = string.match(url, "^(https?://)([^/]+)(/?.*)$")
     if not scheme then return nil end
 
     local base = scheme .. netloc
-    local slug = path:match("/p/([^/?#]+)") or path:match("/home/post/p%-([^/?#]+)") or path:match("([^/]+)$")
+    local slug = string.match(path, "/p/([^/?#]+)") or string.match(path, "/home/post/p%-([^/?#]+)") or
+    string.match(path, "([^/]+)$")
     if slug == "" or slug == "/" then slug = nil end
     return base, slug
 end

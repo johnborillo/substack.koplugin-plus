@@ -20,7 +20,7 @@ end
 
 function SubstackClient:_get_cookie_header()
     local cookie_header = self.cookie or ""
-    if cookie_header ~= "" and not cookie_header:match("=") then
+    if cookie_header ~= "" and not string.match(cookie_header, "=") then
         cookie_header = "substack.sid=" .. cookie_header
     end
     return cookie_header
@@ -30,7 +30,7 @@ function SubstackClient:raw_request(path_or_url, sink)
     local current_url = path_or_url
     if type(current_url) ~= "string" then return nil, "Invalid URL" end
 
-    if not current_url:match("^https?://") then
+    if not string.match(current_url, "^https?://") then
         current_url = self.base_url .. path_or_url
     end
 
