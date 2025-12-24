@@ -46,12 +46,12 @@ function SubstackAPI:parseUrl(url)
     return base, slug
 end
 
-function SubstackAPI:getInbox()
-    return self:request("/reader/posts?limit=20&sort=new")
+function SubstackAPI:getInbox(limit)
+    return self:request("/reader/posts?limit=" .. (limit or 20) .. "&sort=new")
 end
 
-function SubstackAPI:getSaved()
-    return self:request("/reader/posts?inboxType=saved&limit=20")
+function SubstackAPI:getSaved(limit)
+    return self:request("/reader/posts?inboxType=saved&limit=" .. (limit or 20))
 end
 
 function SubstackAPI:getSubscriptions()
@@ -93,9 +93,9 @@ function SubstackAPI:getSubscriptions()
     return nil, last_err or "Could not find subscriptions after trying all endpoints"
 end
 
-function SubstackAPI:getPublicationPosts(subdomain)
+function SubstackAPI:getPublicationPosts(subdomain, limit)
     if not subdomain then return nil, "No subdomain provided" end
-    return self:request(string.format("https://%s.substack.com/api/v1/posts?limit=20&sort=new", subdomain))
+    return self:request(string.format("https://%s.substack.com/api/v1/posts?limit=%d&sort=new", subdomain, limit or 20))
 end
 
 function SubstackAPI:getPostByUrl(url, id, subdomain, slug)

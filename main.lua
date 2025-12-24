@@ -76,8 +76,9 @@ end
 
 function SubstackReader:loadSettings()
     self.settings = self:readJSON(self.settings_file) or
-        { cookie = "", debug_offline = false }
+        { cookie = "", debug_offline = false, post_limit = 20 }
     if self.settings.debug_offline == nil then self.settings.debug_offline = false end
+    if self.settings.post_limit == nil then self.settings.post_limit = 20 end
 
 
     -- Extract cookie from substack_cookie.json (object or browser-array format)
@@ -129,6 +130,46 @@ function SubstackReader:onSubstackMain()
                 self.settings.debug_offline = not self.settings.debug_offline
                 self:saveSettings()
                 self:onSubstackMain() -- Refresh menu
+            end
+        },
+        {
+            text = _("Post Limit: ") .. self.settings.post_limit,
+            callback = function()
+                local InputDialog = require("ui/widget/inputdialog")
+                local limit_input
+                limit_input = InputDialog:new {
+                    title = _("Set Post Limit"),
+                    input = tostring(self.settings.post_limit),
+                    text_type = "number",
+                    buttons = {
+                        {
+                            {
+                                text = _("Cancel"),
+                                id = "cancel",
+                                callback = function()
+                                    UIManager:close(limit_input)
+                                end,
+                            },
+                            {
+                                text = _("OK"),
+                                id = "ok",
+                                is_enter_default = true,
+                                callback = function()
+                                    local val = tonumber(limit_input:getInputValue())
+                                    if val and val >= 1 and val <= 100 then
+                                        self.settings.post_limit = val
+                                        self:saveSettings()
+                                        UIManager:close(limit_input)
+                                        self:onSubstackMain()
+                                    else
+                                        UIManager:show(InfoMessage:new { text = _("Please enter a number between 1 and 100.") })
+                                    end
+                                end,
+                            },
+                        }
+                    },
+                }
+                UIManager:show(limit_input)
             end
         },
 
@@ -300,9 +341,9 @@ function SubstackReader:showPostList(mode, is_cached)
     self:checkOffline(function(use_cache)
         local api_call = function()
             if mode == "inbox" then
-                return self.api:getInbox()
+                return self.api:getInbox(self.settings.post_limit)
             else
-                return self.api:getSaved()
+                return self.api:getSaved(self.settings.post_limit)
             end
         end
 
@@ -367,11 +408,12 @@ function SubstackReader:showPostList(mode, is_cached)
                     text = full_text,
                     callback = function() self:renderPost(post, pub_name, subdomain) end
                 })
-                if i >= 20 then break end
+                if i >= self.settings.post_limit then break end
             end
 
-            local list_title = APP_TITLE ..
-                " | " .. (mode == "inbox" and _("Recent posts") or _("Saved posts"))
+            local list_title = string.format("%s | %s (%d)", APP_TITLE,
+                (mode == "inbox" and _("Recent posts") or _("Saved posts")),
+                self.settings.post_limit)
             if use_cache or is_cached then
                 list_title = list_title .. " (" .. _("Cached") .. ")"
             end
@@ -426,7 +468,7 @@ function SubstackReader:showPublicationPosts(pub, is_cached)
     local cache_file = self.pub_posts_dir .. "/" .. subdomain .. ".json"
 
     self:checkOffline(function(use_cache)
-        local api_call = function() return self.api:getPublicationPosts(subdomain) end
+        local api_call = function() return self.api:getPublicationPosts(subdomain, self.settings.post_limit) end
         self:loadData(cache_file, api_call, use_cache or is_cached, function(data)
             local posts = data.posts or data
             if type(posts) ~= "table" or #posts == 0 then
@@ -447,10 +489,10 @@ function SubstackReader:showPublicationPosts(pub, is_cached)
                     text = prefix .. title,
                     callback = function() self:renderPost(post, pub.name, subdomain) end
                 })
-                if i >= 20 then break end
+                if i >= self.settings.post_limit then break end
             end
 
-            local list_title = pub.name
+            local list_title = string.format("%s (%d)", pub.name, self.settings.post_limit)
             if use_cache or is_cached then list_title = list_title .. " (" .. _("Cached") .. ")" end
             UIManager:show(Menu:new { title = list_title, item_table = items })
         end)
