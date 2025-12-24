@@ -13,7 +13,8 @@ local JSON = (package.loaded["json"] or (pcall(require, "json") and require("jso
 
 local READER_CSS = [[<style>
     .header-title { text-align: center; font-size: 1.5em; font-weight: bold; margin: 0 0 0.5em 0; padding: 0; }
-    .header-subtitle { text-align: center; font-size: 1.1em; font-weight: normal; font-style: italic; color: #666; margin: 0 0 1em 0; }
+    .header-subtitle { text-align: center; font-size: 1.1em; font-weight: normal; font-style: italic; color: #666; margin: 0 0 0.5em 0; }
+    .header-date { text-align: center; font-size: 0.9em; color: #888; margin: 0 0 1em 0; }
     .publication { display: block; text-align: center; font-weight: bold; color: #555; margin: 0 0 2em 0; text-transform: uppercase; font-size: 0.9em; }
     img { max-width: 100%; height: auto; display: block; margin: 1.5em auto; border-radius: 4px; }
     blockquote { border-left: 4px solid #eee; padding-left: 1.5em; margin-left: 0; color: #444; font-style: italic; }
@@ -209,6 +210,28 @@ local function get_pub_name(post, pub_map)
     local clean = url:gsub("^https?://", ""):gsub("^www%.", "")
     -- Keep only the domain part (everything before the first /)
     return clean:match("^([^/]+)") or clean
+end
+
+local function get_ordinal(n)
+    local last_digit = n % 10
+    if n >= 11 and n <= 13 then return "th" end
+    if last_digit == 1 then return "st" end
+    if last_digit == 2 then return "nd" end
+    if last_digit == 3 then return "rd" end
+    return "th"
+end
+
+local months = {
+    "January", "February", "March", "April", "May", "June",
+    "July", "August", "September", "October", "November", "December"
+}
+
+local function format_date(iso_date)
+    if not iso_date or iso_date == "" then return nil end
+    local y, m, d = iso_date:match("^(%d+)-(%d+)-(%d+)")
+    if not y or not m or not d then return nil end
+    y, m, d = tonumber(y), tonumber(m), tonumber(d)
+    return string.format("%d%s %s %d", d, get_ordinal(d), months[m], y)
 end
 
 function SubstackReader:checkOffline(callback)
@@ -546,6 +569,11 @@ function SubstackReader:renderPost(post, pub_name, subdomain)
     local subtitle_html = ""
     if p.subtitle and p.subtitle ~= "" then
         subtitle_html = "<p class='header-subtitle'>" .. p.subtitle .. "</p>"
+    end
+
+    local date_text = format_date(p.post_date)
+    if date_text then
+        subtitle_html = subtitle_html .. "<p class='header-date'>" .. date_text .. "</p>"
     end
 
     if pub_name then
