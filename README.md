@@ -2,6 +2,10 @@
 
 A plugin for KOReader that allows fetching and reading Substack posts.
 
+## Install
+
+Place the contents of this repo in the plugins folder of koreader, within a folder called `substack.koplugin`
+
 ## Features
 
 ### Content Fetching & Display
