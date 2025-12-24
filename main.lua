@@ -76,9 +76,9 @@ end
 
 function SubstackReader:loadSettings()
     self.settings = self:readJSON(self.settings_file) or
-        { cookie = "", debug_offline = false, subscription_sort = "updated" }
+        { cookie = "", debug_offline = false }
     if self.settings.debug_offline == nil then self.settings.debug_offline = false end
-    if self.settings.subscription_sort == nil then self.settings.subscription_sort = "updated" end
+
 
     -- Extract cookie from substack_cookie.json (object or browser-array format)
     local cookie_data = self:readJSON(self.cookie_file)
@@ -131,15 +131,7 @@ function SubstackReader:onSubstackMain()
                 self:onSubstackMain() -- Refresh menu
             end
         },
-        {
-            text = self.settings.subscription_sort == "updated" and _("Sort Subscriptions: Recent Update") or
-                _("Sort Subscriptions: Alphabetical"),
-            callback = function()
-                self.settings.subscription_sort = (self.settings.subscription_sort == "updated") and "alpha" or "updated"
-                self:saveSettings()
-                self:onSubstackMain() -- Refresh menu
-            end
-        },
+
         { text = _("Cookie Help"), callback = function() UIManager:show(InfoMessage:new { text = _("Place substack_cookie.json in:\n" .. self.cookie_file) }) end },
     }
     UIManager:show(Menu:new { title = APP_TITLE, item_table = menu_items })
@@ -404,21 +396,8 @@ function SubstackReader:showSubscriptions(is_cached)
             for _, item in pairs(subs) do
                 local pub = item.publication or item
                 if type(pub) == "table" and pub.name then
-                    -- Safely extract possible update dates (only strings)
-                    local function get_date(obj, key)
-                        local v = obj[key]
-                        return type(v) == "string" and v or nil
-                    end
-
-                    local update_date = get_date(item, "last_post_at") or
-                        get_date(item, "updated_at") or
-                        get_date(pub, "last_post_date") or
-                        get_date(pub, "updated_at") or
-                        get_date(pub, "first_post_date") or ""
-
                     table.insert(items, {
                         text = tostring(pub.name),
-                        update_date = update_date,
                         callback = function() self:showPublicationPosts(pub) end
                     })
                 end
@@ -429,21 +408,7 @@ function SubstackReader:showSubscriptions(is_cached)
                 return
             end
 
-            if self.settings.subscription_sort == "alpha" then
-                table.sort(items, function(a, b) return a.text:lower() < b.text:lower() end)
-            else
-                table.sort(items, function(a, b)
-                    if a.update_date ~= "" and b.update_date ~= "" then
-                        return a.update_date > b.update_date
-                    elseif a.update_date ~= "" then
-                        return true
-                    elseif b.update_date ~= "" then
-                        return false
-                    else
-                        return a.text:lower() < b.text:lower()
-                    end
-                end)
-            end
+            table.sort(items, function(a, b) return a.text:lower() < b.text:lower() end)
             local list_title = APP_TITLE .. " | " .. _("Subscriptions")
             if use_cache or is_cached then list_title = list_title .. " (" .. _("Cached") .. ")" end
             UIManager:show(Menu:new { title = list_title, item_table = items })
