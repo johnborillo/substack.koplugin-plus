@@ -8,6 +8,7 @@ local SubstackAPI = require("substack_api")
 local DataStorage = require("datastorage")
 local _ = require("gettext")
 local lfs = require("libs/libkoreader-lfs")
+local logger = require("logger")
 
 local JSON = (package.loaded["json"] or (pcall(require, "json") and require("json")) or require("util").json)
 
@@ -76,9 +77,10 @@ end
 
 function SubstackReader:loadSettings()
     self.settings = self:readJSON(self.settings_file) or
-        { cookie = "", debug_offline = false, post_limit = 20 }
+        { cookie = "", debug_offline = false, post_limit = 20, favourites = {} }
     if self.settings.debug_offline == nil then self.settings.debug_offline = false end
     if self.settings.post_limit == nil then self.settings.post_limit = 20 end
+    if self.settings.favourites == nil then self.settings.favourites = {} end
 
 
     -- Load cookie from substack_cookie.txt
@@ -87,7 +89,7 @@ function SubstackReader:loadSettings()
         if not f then return nil end
         local content = f:read("*all")
         f:close()
-        return content:gsub("^%s+", ""):gsub("%s+$", "")
+        return string.gsub(string.gsub(content, "^%s+", ""), "%s+$", "")
     end
 
     local cookie = read_txt(self.cookie_file)
@@ -166,7 +168,6 @@ function SubstackReader:onSubstackMain()
             end
         },
 
-        { text = _("Cookie Help"), callback = function() UIManager:show(InfoMessage:new { text = _("Place substack_cookie.txt in:\n" .. self.cookie_file) }) end },
     }
     UIManager:show(Menu:new { title = APP_TITLE, item_table = menu_items })
 end
@@ -233,9 +234,9 @@ local function get_pub_name(post, pub_map)
     if not url or type(url) ~= "string" then return "Substack" end
 
     -- Fallback: Remove protocol (https://, http://) and www.
-    local clean = url:gsub("^https?://", ""):gsub("^www%.", "")
+    local clean = string.gsub(string.gsub(url, "^https?://", ""), "^www%.", "")
     -- Keep only the domain part (everything before the first /)
-    return clean:match("^([^/]+)") or clean
+    return string.match(clean, "^([^/]+)") or clean
 end
 
 local function get_ordinal(n)
@@ -254,7 +255,7 @@ local months = {
 
 local function format_date(iso_date)
     if not iso_date or iso_date == "" then return nil end
-    local y, m, d = iso_date:match("^(%d+)-(%d+)-(%d+)")
+    local y, m, d = string.match(iso_date, "^(%d+)-(%d+)-(%d+)")
     if not y or not m or not d then return nil end
     y, m, d = tonumber(y), tonumber(m), tonumber(d)
     return string.format("%d%s %s %d", d, get_ordinal(d), months[m], y)
@@ -350,7 +351,7 @@ function SubstackReader:showPostList(mode, is_cached)
             local date_map = {}
             if data.inboxItems then
                 for _, item in ipairs(data.inboxItems) do
-                    local pid = item.post_id or (item.content_key and item.content_key:match("post:(%d+)"))
+                    local pid = item.post_id or (item.content_key and string.match(item.content_key, "post:(%d+)"))
                     if pid then
                         date_map[tostring(pid)] = item.saved_at or item.inbox_date or item.content_date
                     end
@@ -416,7 +417,18 @@ function SubstackReader:showPostList(mode, is_cached)
     end)
 end
 
-function SubstackReader:showSubscriptions(is_cached)
+function SubstackReader:toggleFavourite(pub)
+    local pid = tostring(pub.id or pub.subdomain or "")
+    if pid == "" then return end
+    if self.settings.favourites[pid] then
+        self.settings.favourites[pid] = nil
+    else
+        self.settings.favourites[pid] = true
+    end
+    self:saveSettings()
+end
+
+function SubstackReader:showSubscriptions(is_cached, manage_mode)
     self:checkOffline(function(use_cache)
         local api_call = function() return self.api:getSubscriptions() end
         self:loadData(self.subscriptions_cache, api_call, use_cache or is_cached, function(data)
@@ -428,23 +440,60 @@ function SubstackReader:showSubscriptions(is_cached)
                 return
             end
 
+            -- Header for Manage Mode
+            if manage_mode then
+                table.insert(items, {
+                    text = _("[ Exit Manage Mode ]"),
+                    callback = function() self:showSubscriptions(true, false) end
+                })
+            else
+                table.insert(items, {
+                    text = _("[ Manage Favourites ]"),
+                    callback = function() self:showSubscriptions(true, true) end
+                })
+            end
+
             for _, item in pairs(subs) do
                 local pub = item.publication or item
                 if type(pub) == "table" and pub.name then
+                    local pid = tostring(pub.id or pub.subdomain or "")
+                    local is_fav = self.settings.favourites[pid]
+                    local display_name = (is_fav and "* " or "") .. tostring(pub.name)
+
                     table.insert(items, {
-                        text = tostring(pub.name),
-                        callback = function() self:showPublicationPosts(pub) end
+                        text = display_name,
+                        is_fav = is_fav, -- Keep for sorting
+                        callback = function()
+                            if manage_mode then
+                                self:toggleFavourite(pub)
+                                self:showSubscriptions(true, true)
+                            else
+                                self:showPublicationPosts(pub)
+                            end
+                        end,
                     })
                 end
             end
 
-            if #items == 0 then
+            if #items == (manage_mode and 1 or 1) and #subs == 0 then
                 UIManager:show(InfoMessage:new { text = _("No subscriptions found in response.") })
                 return
             end
 
-            table.sort(items, function(a, b) return a.text:lower() < b.text:lower() end)
+            -- Sort everything below the header
+            local header = table.remove(items, 1)
+            table.sort(items, function(a, b)
+                local fav_a = a.is_fav and 1 or 0
+                local fav_b = b.is_fav and 1 or 0
+                if fav_a ~= fav_b then
+                    return fav_a > fav_b
+                end
+                return a.text:lower() < b.text:lower()
+            end)
+            table.insert(items, 1, header)
+
             local list_title = APP_TITLE .. " | " .. _("Subscriptions")
+            if manage_mode then list_title = list_title .. " [" .. _("Managing") .. "]" end
             if use_cache or is_cached then list_title = list_title .. " (" .. _("Cached") .. ")" end
             UIManager:show(Menu:new { title = list_title, item_table = items })
         end)
@@ -535,10 +584,10 @@ function SubstackReader:renderPost(post, pub_name, subdomain)
 
     -- Download images and rewrite to relative local paths
     local image_count = 0
-    content = content:gsub('<img[^>]+src=["\']([^"\']+)["\'][^>]*>', function(url)
+    content = string.gsub(content, '<img[^>]+src=["\']([^"\']+)["\'][^>]*>', function(url)
         image_count = image_count + 1
-        local download_url = url:gsub("f_auto", "f_jpg"):gsub("f_webp", "f_jpg")
-        local ext = url:match("%.(%w+)$") or "jpg"
+        local download_url = string.gsub(string.gsub(url, "f_auto", "f_jpg"), "f_webp", "f_jpg")
+        local ext = string.match(url, "%.(%w+)$") or "jpg"
         if #ext > 4 then ext = "jpg" end
 
         local local_name = string.format("img_%03d.%s", image_count, ext)
@@ -553,9 +602,9 @@ function SubstackReader:renderPost(post, pub_name, subdomain)
 
     -- Strip wrapping <a> tags from images to trigger KOReader's internal viewer popup.
     -- This avoids opening the image as a separate document.
-    content = content:gsub('(<a[^>]-href=["\'])([^"\']-)(["\'][^>]->)([%s%S]-)(</a>)',
+    content = string.gsub(content, '(<a[^>]-href=["\'])([^"\']-)(["\'][^>]->)([%s%S]-)(</a>)',
         function(a_start, a_href, a_end_tag, a_inner, a_close)
-            if a_inner:find('<img') then
+            if string.find(a_inner, '<img') then
                 return a_inner -- Return only the content, stripping the <a> and </a>
             end
             return a_start .. a_href .. a_end_tag .. a_inner .. a_close
@@ -580,8 +629,8 @@ function SubstackReader:renderPost(post, pub_name, subdomain)
         subtitle_html = subtitle_html .. "<div class='publication'>" .. pub_name .. "</div>"
     end
 
-    local clean_title = (p.title or "Untitled"):gsub("^%s+", ""):gsub("%s+$", "")
-    local clean_content = content:gsub("^%s+", ""):gsub("%s+$", "")
+    local clean_title = string.gsub(string.gsub(p.title or "Untitled", "^%s+", ""), "%s+$", "")
+    local clean_content = string.gsub(string.gsub(content, "^%s+", ""), "%s+$", "")
     local html = string.format(
         "<!DOCTYPE html><html><head><meta charset='UTF-8'>%s</head><body><p class='header-title'>%s</p>%s<hr>%s</body></html>",
         READER_CSS, clean_title, subtitle_html, clean_content)
