@@ -30,7 +30,7 @@ local APP_TITLE = _("Substack Reader")
 
 function SubstackReader:init()
     self.settings_file = DataStorage:getSettingsDir() .. "/substack_settings.json"
-    self.cookie_file = DataStorage:getSettingsDir() .. "/substack_cookie.json"
+    self.cookie_file = DataStorage:getSettingsDir() .. "/substack_cookie.txt"
     self.image_dir = DataStorage:getSettingsDir() .. "/substack_images"
     self.post_dir = DataStorage:getSettingsDir() .. "/substack_posts"
     self.inbox_cache = DataStorage:getSettingsDir() .. "/substack_inbox_cache.json"
@@ -81,26 +81,19 @@ function SubstackReader:loadSettings()
     if self.settings.post_limit == nil then self.settings.post_limit = 20 end
 
 
-    -- Extract cookie from substack_cookie.json (object or browser-array format)
-    local cookie_data = self:readJSON(self.cookie_file)
-
-    -- Fallback: check in the plugin directory if not found in settings
-    if not cookie_data then
-        local plugin_dir = "plugins/substack.koplugin"
-        cookie_data = self:readJSON(plugin_dir .. "/substack_cookie.json")
+    -- Load cookie from substack_cookie.txt
+    local function read_txt(path)
+        local f = io.open(path, "r")
+        if not f then return nil end
+        local content = f:read("*all")
+        f:close()
+        return content:gsub("^%s+", ""):gsub("%s+$", "")
     end
 
-    if type(cookie_data) == "table" then
-        if cookie_data.cookie then
-            self.settings.cookie = cookie_data.cookie
-        else
-            for _, c in ipairs(cookie_data) do
-                if c.name == "substack.sid" then
-                    self.settings.cookie = c.value
-                    break
-                end
-            end
-        end
+    local cookie = read_txt(self.cookie_file)
+
+    if cookie and cookie ~= "" then
+        self.settings.cookie = cookie
     end
 
     -- Update API with loaded cookie
@@ -173,7 +166,7 @@ function SubstackReader:onSubstackMain()
             end
         },
 
-        { text = _("Cookie Help"), callback = function() UIManager:show(InfoMessage:new { text = _("Place substack_cookie.json in:\n" .. self.cookie_file) }) end },
+        { text = _("Cookie Help"), callback = function() UIManager:show(InfoMessage:new { text = _("Place substack_cookie.txt in:\n" .. self.cookie_file) }) end },
     }
     UIManager:show(Menu:new { title = APP_TITLE, item_table = menu_items })
 end
