@@ -2,6 +2,10 @@
 
 A plugin for KOReader that allows fetching and reading Substack posts.
 
+## Data privacy
+
+**This plugin uses the cookie that is generated from a logged in substack account. You place the cookie in your koreader device. At no point do I have any knowledge of your cookie. The cookie is embedded in any HTTP requests to the substack official servers, just like when you the substack official app or website. From the point of view of substack, they do not know that you are using a KOReader plugin.**
+
 ## Substack plugin main menu
 
 ![Plugin Main menu](plugin_menu.png "Plugin Main menu")
