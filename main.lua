@@ -5,6 +5,7 @@ local WidgetContainer = require("ui/widget/container/widgetcontainer")
 local ConfirmBox = require("ui/widget/confirmbox")
 local NetworkMgr = require("ui/network/manager")
 local SubstackAPI = require("substack_api")
+local SubstackDB = require("substack_db")
 local DataStorage = require("datastorage")
 local _ = require("gettext")
 local lfs = require("libs/libkoreader-lfs")
@@ -32,20 +33,20 @@ local APP_TITLE = _("Substack Reader")
 function SubstackReader:init()
     self.settings_file = DataStorage:getSettingsDir() .. "/substack_settings.json"
     self.cookie_file = DataStorage:getSettingsDir() .. "/substack_cookie.txt"
-    self.image_dir = DataStorage:getSettingsDir() .. "/substack_images"
-    self.post_dir = DataStorage:getSettingsDir() .. "/substack_posts"
     self.inbox_cache = DataStorage:getSettingsDir() .. "/substack_inbox_cache.json"
     self.saved_cache = DataStorage:getSettingsDir() .. "/substack_saved_cache.json"
     self.subscriptions_cache = DataStorage:getSettingsDir() .. "/substack_subscriptions_cache.json"
     self.pub_posts_dir = DataStorage:getSettingsDir() .. "/substack_pub_posts_cache"
+    self.db_file = DataStorage:getSettingsDir() .. "/substack_cache.sqlite3"
+    self.transient_dir = DataStorage:getSettingsDir() .. "/substack_current_post"
 
     self:loadSettings()
     self.api = SubstackAPI:new(self.settings.cookie)
+    self.db = SubstackDB:new(self.db_file)
     self.ui.menu:registerToMainMenu(self)
 
-    if not lfs.attributes(self.image_dir) then lfs.mkdir(self.image_dir) end
-    if not lfs.attributes(self.post_dir) then lfs.mkdir(self.post_dir) end
     if not lfs.attributes(self.pub_posts_dir) then lfs.mkdir(self.pub_posts_dir) end
+    if not lfs.attributes(self.transient_dir) then lfs.mkdir(self.transient_dir) end
 end
 
 function SubstackReader:addToMainMenu(menu_items)
@@ -173,9 +174,6 @@ function SubstackReader:onSubstackMain()
 end
 
 function SubstackReader:clearCache()
-    local img_count = 0
-    local post_count = 0
-
     local function rm_recursive(path)
         if not lfs.attributes(path) then return end
         if lfs.attributes(path).mode == "directory" then
@@ -190,24 +188,9 @@ function SubstackReader:clearCache()
         end
     end
 
-    if lfs.attributes(self.image_dir) then
-        for file in lfs.dir(self.image_dir) do
-            if file ~= "." and file ~= ".." then
-                os.remove(self.image_dir .. "/" .. file)
-                img_count = img_count + 1
-            end
-        end
-    end
-
-    if lfs.attributes(self.post_dir) then
-        for file in lfs.dir(self.post_dir) do
-            if file ~= "." and file ~= ".." then
-                local full_path = self.post_dir .. "/" .. file
-                rm_recursive(full_path)
-                post_count = post_count + 1
-            end
-        end
-    end
+    self.db:clearCache()
+    rm_recursive(self.transient_dir)
+    lfs.mkdir(self.transient_dir)
 
     os.remove(self.inbox_cache)
     os.remove(self.saved_cache)
@@ -215,7 +198,7 @@ function SubstackReader:clearCache()
     rm_recursive(self.pub_posts_dir)
     lfs.mkdir(self.pub_posts_dir)
 
-    UIManager:show(InfoMessage:new { text = _("Cache cleared.") .. string.format("\n(%d posts, %d images)", post_count, img_count) })
+    UIManager:show(InfoMessage:new { text = _("Cache cleared.") })
 end
 
 local function truncate(str, len)
@@ -322,11 +305,14 @@ function SubstackReader:loadData(cache_file, api_call, is_cached, callback)
     callback(data)
 end
 
-function SubstackReader:getPostLocalPath(post)
+function SubstackReader:isPostCached(post)
     local p = post.post or post
     local post_id = tostring(p.id or p.slug or "")
-    if post_id == "" then return nil end
-    return self.post_dir .. "/" .. post_id .. ".html"
+    return post_id ~= "" and self.db:isPostCached(post_id)
+end
+
+function SubstackReader:getPostLocalPath(post)
+    return self.transient_dir .. "/index.html"
 end
 
 function SubstackReader:showPostList(mode, is_cached)
@@ -390,8 +376,7 @@ function SubstackReader:showPostList(mode, is_cached)
                 local pub_name = get_pub_name(post, pub_map)
                 local subdomain = pub_domain_map[pub_id]
 
-                local local_path = self:getPostLocalPath(post)
-                local is_locally_cached = local_path and lfs.attributes(local_path) ~= nil
+                local is_locally_cached = self:isPostCached(post)
 
                 local display_title = truncate(title, MAX_WIDTH - PUB_MIN - 6)
                 local display_pub = truncate(pub_name, MAX_WIDTH - #display_title - 6)
@@ -523,8 +508,7 @@ function SubstackReader:showPublicationPosts(pub, is_cached)
             for i, post in ipairs(posts) do
                 local p_info = post.post or post
                 local title = truncate(p_info.title or "Untitled", MAX_WIDTH - 6)
-                local local_path = self:getPostLocalPath(post)
-                local is_locally_cached = local_path and lfs.attributes(local_path) ~= nil
+                local is_locally_cached = self:isPostCached(post)
                 local prefix = is_locally_cached and "[C] " or ""
 
                 table.insert(items, {
@@ -543,19 +527,65 @@ end
 
 function SubstackReader:renderPost(post, pub_name, subdomain)
     local p = post.post or post
-    local path = self:getPostLocalPath(post)
+    local post_id = tostring(p.id or p.slug or "")
+    if post_id == "" then return end
 
-    -- If we have the file already, we can potentially skip fetching
-    local cached_exists = path and lfs.attributes(path) ~= nil
-
-    if not self:isOnline() then
-        if cached_exists then
-            require("apps/reader/readerui"):showReader(path)
-            return
+    local function rm_recursive(path)
+        if not lfs.attributes(path) then return end
+        if lfs.attributes(path).mode == "directory" then
+            for file in lfs.dir(path) do
+                if file ~= "." and file ~= ".." then
+                    rm_recursive(path .. "/" .. file)
+                end
+            end
+            lfs.rmdir(path)
         else
-            UIManager:show(InfoMessage:new { text = _("This post is not cached and you are offline.") })
-            return
+            os.remove(path)
         end
+    end
+
+    local function extract_from_db(pid)
+        local db_post = self.db:getPost(pid)
+        if not db_post then return false end
+
+        -- Clear and recreate transient dir
+        rm_recursive(self.transient_dir)
+        lfs.mkdir(self.transient_dir)
+        local img_dir = self.transient_dir .. "/images"
+        lfs.mkdir(img_dir)
+
+        -- Extract images
+        local images = self.db:getImagesForPost(pid)
+        for _, img in ipairs(images) do
+            local img_path = img_dir .. "/" .. img.url_hash .. "." .. img.extension
+            local f = io.open(img_path, "wb")
+            if f then
+                f:write(img.data)
+                f:close()
+            end
+        end
+
+        -- Write HTML
+        local html_path = self.transient_dir .. "/index.html"
+        local f = io.open(html_path, "w")
+        if f then
+            f:write(db_post.html_content)
+            f:close()
+            require("apps/reader/readerui"):showReader(html_path)
+            return true
+        end
+        return false
+    end
+
+    -- 1. Try Cache First
+    if self:isPostCached(post) then
+        if extract_from_db(post_id) then return end
+    end
+
+    -- 2. Fetch if Online
+    if not self:isOnline() then
+        UIManager:show(InfoMessage:new { text = _("Post not cached and you are offline.") })
+        return
     end
 
     local info = InfoMessage:new { text = _("Fetching full post...") }
@@ -566,23 +596,16 @@ function SubstackReader:renderPost(post, pub_name, subdomain)
     if not full then
         local target = p.canonical_url or p.url or p.id or "unknown"
         local msg = _("Could not fetch post content:") .. "\n" .. tostring(target)
-        if err then
-            msg = msg .. "\n(" .. tostring(err) .. ")"
-        end
+        if err then msg = msg .. "\n(" .. tostring(err) .. ")" end
         UIManager:show(InfoMessage:new { text = msg })
         return
     end
 
-    local p = full.post or full
-    local content = p.body_html or ""
-    local post_id = tostring(p.id or p.slug or "")
-    if post_id == "" then post_id = tostring(os.time()) end
-    local post_img_dir_name = post_id .. "_images"
-    local post_img_dir = self.post_dir .. "/" .. post_img_dir_name
+    local fp = full.post or full
+    local content = fp.body_html or ""
+    local fetched_post_id = tostring(fp.id or fp.slug or post_id)
 
-    if not lfs.attributes(post_img_dir) then lfs.mkdir(post_img_dir) end
-
-    -- Download images and rewrite to relative local paths
+    -- Download images to memory and save to DB
     local image_count = 0
     content = string.gsub(content, '<img[^>]+src=["\']([^"\']+)["\'][^>]*>', function(url)
         image_count = image_count + 1
@@ -590,58 +613,45 @@ function SubstackReader:renderPost(post, pub_name, subdomain)
         local ext = string.match(url, "%.(%w+)$") or "jpg"
         if #ext > 4 then ext = "jpg" end
 
-        local local_name = string.format("img_%03d.%s", image_count, ext)
-        local local_path = post_img_dir .. "/" .. local_name
-        local local_rel_path = post_img_dir_name .. "/" .. local_name
+        -- Use a hash of the URL as the filename to avoid conflicts and allow simple DB storage
+        local url_hash = string.gsub(url, "[^%w]", ""):sub(-16) .. "_" .. image_count
+        local img_data = self.api:downloadData(download_url)
 
-        if self.api:downloadFile(download_url, local_path) then
-            return string.format('<img src="%s">', local_rel_path)
+        if img_data then
+            self.db:saveImage(url_hash, fetched_post_id, img_data, ext)
+            return string.format('<img src="images/%s.%s">', url_hash, ext)
         end
         return string.format('<img src="%s">', url)
     end)
 
-    -- Strip wrapping <a> tags from images to trigger KOReader's internal viewer popup.
-    -- This avoids opening the image as a separate document.
+    -- Formatting logic (Title, Date, Publication etc.)
     content = string.gsub(content, '(<a[^>]-href=["\'])([^"\']-)(["\'][^>]->)([%s%S]-)(</a>)',
         function(a_start, a_href, a_end_tag, a_inner, a_close)
-            if string.find(a_inner, '<img') then
-                return a_inner -- Return only the content, stripping the <a> and </a>
-            end
+            if string.find(a_inner, '<img') then return a_inner end
             return a_start .. a_href .. a_end_tag .. a_inner .. a_close
         end)
 
     if content == "" then
-        content = p.audience == "only_paid" and _("<p><i>(Post is paywalled. Check cookie.)</i></p>") or
+        content = fp.audience == "only_paid" and _("<p><i>(Post is paywalled. Check cookie.)</i></p>") or
             _("<p><i>(No content found.)</i></p>")
     end
 
     local subtitle_html = ""
-    if p.subtitle and p.subtitle ~= "" then
-        subtitle_html = "<p class='header-subtitle'>" .. p.subtitle .. "</p>"
-    end
+    if fp.subtitle and fp.subtitle ~= "" then subtitle_html = "<p class='header-subtitle'>" .. fp.subtitle .. "</p>" end
+    local date_text = format_date(fp.post_date)
+    if date_text then subtitle_html = subtitle_html .. "<p class='header-date'>" .. date_text .. "</p>" end
+    if pub_name then subtitle_html = subtitle_html .. "<div class='publication'>" .. pub_name .. "</div>" end
 
-    local date_text = format_date(p.post_date)
-    if date_text then
-        subtitle_html = subtitle_html .. "<p class='header-date'>" .. date_text .. "</p>"
-    end
-
-    if pub_name then
-        subtitle_html = subtitle_html .. "<div class='publication'>" .. pub_name .. "</div>"
-    end
-
-    local clean_title = string.gsub(string.gsub(p.title or "Untitled", "^%s+", ""), "%s+$", "")
-    local clean_content = string.gsub(string.gsub(content, "^%s+", ""), "%s+$", "")
+    local clean_title = string.gsub(string.gsub(fp.title or "Untitled", "^%s+", ""), "%s+$", "")
     local html = string.format(
         "<!DOCTYPE html><html><head><meta charset='UTF-8'>%s</head><body><p class='header-title'>%s</p>%s<hr>%s</body></html>",
-        READER_CSS, clean_title, subtitle_html, clean_content)
+        READER_CSS, clean_title, subtitle_html, content)
 
-    local path = self.post_dir .. "/" .. post_id .. ".html"
-    local f = io.open(path, "w")
-    if f then
-        f:write(html)
-        f:close()
-        require("apps/reader/readerui"):showReader(path)
-    end
+    -- Save to DB
+    self.db:savePost(fetched_post_id, clean_title, pub_name, subdomain, html, fp)
+
+    -- Extract and Show
+    extract_from_db(fetched_post_id)
 end
 
 return SubstackReader

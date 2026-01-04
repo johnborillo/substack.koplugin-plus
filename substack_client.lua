@@ -105,4 +105,13 @@ function SubstackClient:download_file(url, target_path)
     return false
 end
 
+function SubstackClient:download_data(url)
+    local code, body_or_err = self:raw_request(url)
+
+    if code == 200 and type(body_or_err) == "table" then
+        return table.concat(body_or_err)
+    end
+    return nil, tostring(body_or_err or "Download failed")
+end
+
 return SubstackClient

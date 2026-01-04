@@ -35,6 +35,10 @@ function SubstackAPI:downloadFile(url, target_path)
     return self.client:download_file(url, target_path)
 end
 
+function SubstackAPI:downloadData(url)
+    return self.client:download_data(url)
+end
+
 function SubstackAPI:parseUrl(url)
     if not url or type(url) ~= "string" then return nil end
     local scheme, netloc, path = string.match(url, "^(https?://)([^/]+)(/?.*)$")
