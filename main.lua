@@ -2,6 +2,7 @@ local InfoMessage = require("ui/widget/infomessage")
 local Menu = require("ui/widget/menu")
 local UIManager = require("ui/uimanager")
 local WidgetContainer = require("ui/widget/container/widgetcontainer")
+local InputContainer = require("ui/widget/container/inputcontainer")
 local ConfirmBox = require("ui/widget/confirmbox")
 local NetworkMgr = require("ui/network/manager")
 local SubstackAPI = require("substack_api")
@@ -10,19 +11,36 @@ local DataStorage = require("datastorage")
 local _ = require("gettext")
 local lfs = require("libs/libkoreader-lfs")
 local logger = require("logger")
+local SubstackUtils = require("substack_utils")
+local SubstackPostViewer = require("substack_viewer")
 
 local JSON = (package.loaded["json"] or (pcall(require, "json") and require("json")) or require("util").json)
+local TitleBar = require("ui/widget/titlebar")
+local ScrollHtmlWidget = require("ui/widget/scrollhtmlwidget")
+local ButtonTable = require("ui/widget/buttontable")
+local VerticalGroup = require("ui/widget/verticalgroup")
+local CenterContainer = require("ui/widget/container/centercontainer")
+local FrameContainer = require("ui/widget/container/framecontainer")
+local MovableContainer = require("ui/widget/container/movablecontainer")
+local HorizontalGroup = require("ui/widget/horizontalgroup")
+local HorizontalSpan = require("ui/widget/horizontalspan")
+local InputDialog = require("ui/widget/inputdialog")
+local CheckButton = require("ui/widget/checkbutton")
+local Notification = require("ui/widget/notification")
+local Size = require("ui/size")
+local Font = require("ui/font")
+local Device = require("device")
+local Screen = Device.screen
+local Geom = require("ui/geometry")
+local Blitbuffer = require("ffi/blitbuffer")
 
-local READER_CSS = [[<style>
-    .header-title { text-align: center; font-size: 1.5em; font-weight: bold; margin: 0 0 0.5em 0; padding: 0; }
-    .header-subtitle { text-align: center; font-size: 1.1em; font-weight: normal; font-style: italic; color: #666; margin: 0 0 0.5em 0; }
-    .header-date { text-align: center; font-size: 0.9em; color: #888; margin: 0 0 1em 0; }
-    .publication { display: block; text-align: center; font-weight: bold; color: #555; margin: 0 0 2em 0; text-transform: uppercase; font-size: 0.9em; }
-    img { max-width: 100%; height: auto; display: block; margin: 1.5em auto; border-radius: 4px; }
-    blockquote { border-left: 4px solid #eee; padding-left: 1.5em; margin-left: 0; color: #444; font-style: italic; }
-    pre { background: #f9f9f9; padding: 1em; overflow-x: auto; border-radius: 4px; font-family: monospace; }
-    hr { border: 0; border-top: 1px solid #eee; margin: 3em 0; }
-</style>]]
+
+
+
+local Blitbuffer = require("ffi/blitbuffer")
+
+
+
 
 local SubstackReader = WidgetContainer:extend {
     name = "substack",
@@ -57,43 +75,22 @@ function SubstackReader:addToMainMenu(menu_items)
     }
 end
 
-function SubstackReader:readJSON(path)
-    local f = io.open(path, "r")
-    if not f then return nil end
-    local content = f:read("*all")
-    f:close()
-    local ok, decoded = pcall(JSON.decode, content)
-    return ok and decoded or nil
-end
 
-function SubstackReader:saveJSON(path, data)
-    local f = io.open(path, "w")
-    if f then
-        f:write(JSON.encode(data))
-        f:close()
-        return true
-    end
-    return false
-end
+
 
 function SubstackReader:loadSettings()
-    self.settings = self:readJSON(self.settings_file) or
-        { cookie = "", debug_offline = false, post_limit = 20, favourites = {} }
+    self.settings = SubstackUtils.readJSON(self.settings_file) or
+        { cookie = "", debug_offline = false, post_limit = 20, favourites = {}, line_spacing = 1.2, font_size = Screen:scaleBySize(22), show_images = true }
     if self.settings.debug_offline == nil then self.settings.debug_offline = false end
     if self.settings.post_limit == nil then self.settings.post_limit = 20 end
     if self.settings.favourites == nil then self.settings.favourites = {} end
+    if self.settings.line_spacing == nil then self.settings.line_spacing = 1.2 end
+    if self.settings.font_size == nil or self.settings.font_size > 50 then self.settings.font_size = 22 end
+    if self.settings.show_images == nil then self.settings.show_images = true end
 
 
     -- Load cookie from substack_cookie.txt
-    local function read_txt(path)
-        local f = io.open(path, "r")
-        if not f then return nil end
-        local content = f:read("*all")
-        f:close()
-        return string.gsub(string.gsub(content, "^%s+", ""), "%s+$", "")
-    end
-
-    local cookie = read_txt(self.cookie_file)
+    local cookie = SubstackUtils.read_txt(self.cookie_file)
 
     if cookie and cookie ~= "" then
         self.settings.cookie = cookie
@@ -106,7 +103,7 @@ function SubstackReader:loadSettings()
 end
 
 function SubstackReader:saveSettings()
-    self:saveJSON(self.settings_file, self.settings)
+    SubstackUtils.saveJSON(self.settings_file, self.settings)
 end
 
 function SubstackReader:isOnline()
@@ -174,37 +171,20 @@ function SubstackReader:onSubstackMain()
 end
 
 function SubstackReader:clearCache()
-    local function rm_recursive(path)
-        if not lfs.attributes(path) then return end
-        if lfs.attributes(path).mode == "directory" then
-            for file in lfs.dir(path) do
-                if file ~= "." and file ~= ".." then
-                    rm_recursive(path .. "/" .. file)
-                end
-            end
-            lfs.rmdir(path)
-        else
-            os.remove(path)
-        end
-    end
-
     self.db:clearCache()
-    rm_recursive(self.transient_dir)
+    SubstackUtils.rm_recursive(self.transient_dir)
     lfs.mkdir(self.transient_dir)
 
     os.remove(self.inbox_cache)
     os.remove(self.saved_cache)
     os.remove(self.subscriptions_cache)
-    rm_recursive(self.pub_posts_dir)
+    SubstackUtils.rm_recursive(self.pub_posts_dir)
     lfs.mkdir(self.pub_posts_dir)
 
     UIManager:show(InfoMessage:new { text = _("Cache cleared.") })
 end
 
-local function truncate(str, len)
-    if #str <= len then return str end
-    return str:sub(1, math.max(0, len - 3)) .. "..."
-end
+
 
 local function get_pub_name(post, pub_map)
     local p = post.post or post
@@ -280,7 +260,7 @@ function SubstackReader:loadData(cache_file, api_call, is_cached, callback)
 
     local data, err
     if is_cached then
-        data = self:readJSON(cache_file)
+        data = SubstackUtils.readJSON(cache_file)
         if not data then
             UIManager:close(info)
             UIManager:show(InfoMessage:new { text = _("No cached data found.") })
@@ -289,7 +269,7 @@ function SubstackReader:loadData(cache_file, api_call, is_cached, callback)
     else
         data, err = api_call()
         if data then
-            self:saveJSON(cache_file, data)
+            SubstackUtils.saveJSON(cache_file, data)
         end
     end
 
@@ -378,8 +358,8 @@ function SubstackReader:showPostList(mode, is_cached)
 
                 local is_locally_cached = self:isPostCached(post)
 
-                local display_title = truncate(title, MAX_WIDTH - PUB_MIN - 6)
-                local display_pub = truncate(pub_name, MAX_WIDTH - #display_title - 6)
+                local display_title = SubstackUtils.truncate(title, MAX_WIDTH - PUB_MIN - 6)
+                local display_pub = SubstackUtils.truncate(pub_name, MAX_WIDTH - #display_title - 6)
                 local prefix = is_locally_cached and "[C] " or ""
                 local full_text = string.format("%s%s | %s", prefix, display_title, display_pub)
 
@@ -507,7 +487,7 @@ function SubstackReader:showPublicationPosts(pub, is_cached)
             local MAX_WIDTH = 60
             for i, post in ipairs(posts) do
                 local p_info = post.post or post
-                local title = truncate(p_info.title or "Untitled", MAX_WIDTH - 6)
+                local title = SubstackUtils.truncate(p_info.title or "Untitled", MAX_WIDTH - 6)
                 local is_locally_cached = self:isPostCached(post)
                 local prefix = is_locally_cached and "[C] " or ""
 
@@ -530,26 +510,12 @@ function SubstackReader:renderPost(post, pub_name, subdomain)
     local post_id = tostring(p.id or p.slug or "")
     if post_id == "" then return end
 
-    local function rm_recursive(path)
-        if not lfs.attributes(path) then return end
-        if lfs.attributes(path).mode == "directory" then
-            for file in lfs.dir(path) do
-                if file ~= "." and file ~= ".." then
-                    rm_recursive(path .. "/" .. file)
-                end
-            end
-            lfs.rmdir(path)
-        else
-            os.remove(path)
-        end
-    end
-
     local function extract_from_db(pid)
         local db_post = self.db:getPost(pid)
         if not db_post then return false end
 
         -- Clear and recreate transient dir
-        rm_recursive(self.transient_dir)
+        SubstackUtils.rm_recursive(self.transient_dir)
         lfs.mkdir(self.transient_dir)
         local img_dir = self.transient_dir .. "/images"
         lfs.mkdir(img_dir)
@@ -571,7 +537,21 @@ function SubstackReader:renderPost(post, pub_name, subdomain)
         if f then
             f:write(db_post.html_content)
             f:close()
-            require("apps/reader/readerui"):showReader(html_path)
+            local viewer = SubstackPostViewer:new {
+                title = db_post.title or _("Post"),
+                html_body = db_post.html_content,
+                html_resource_directory = self.transient_dir,
+                line_spacing = self.settings.line_spacing,
+                font_size = self.settings.font_size,
+                show_images = self.settings.show_images,
+                close_callback = function(spacing, font_size, show_images)
+                    self.settings.line_spacing = spacing
+                    self.settings.font_size = font_size
+                    self.settings.show_images = show_images
+                    self:saveSettings()
+                end,
+            }
+            UIManager:show(viewer)
             return true
         end
         return false
@@ -644,9 +624,12 @@ function SubstackReader:renderPost(post, pub_name, subdomain)
 
     local clean_title = string.gsub(string.gsub(fp.title or "Untitled", "^%s+", ""), "%s+$", "")
     local html = string.format(
-        "<!DOCTYPE html><html><head><meta charset='UTF-8'>%s</head><body><p class='header-title'>%s</p>%s<hr>%s</body></html>",
-        READER_CSS, clean_title, subtitle_html, content)
-
+        "<!DOCTYPE html><html><head><meta charset='UTF-8'><style>%s</style></head><body><p class='header-title'>%s</p>%s<hr>%s</body></html>",
+        READER_CSS,
+        clean_title,
+        subtitle_html,
+        content
+    )
     -- Save to DB
     self.db:savePost(fetched_post_id, clean_title, pub_name, subdomain, html, fp)
 

@@ -27,6 +27,8 @@ Place the contents of this repo in the plugins folder of koreader, within a fold
 - **Post Rendering**: Converts Substack content to a clean HTML format suitable for KOReader's internal viewer.
 - **Metadata**: Displays publication name, post title, subtitle, and date (formatted as "Dayth Month Year").
 - **Images**: Automatically downloads images and allows clicking them to open in KOReader's full-screen viewer.
+- **Image Toggle**: Quickly toggle images on/off within the post viewer.
+- **Text Adjustment**: Adjustable font size and line spacing for comfortable reading.
 
 ### Newsletter Management
 - **Favourites**: Mark specific newsletters as favorites to keep them at the top of the subscription list.
