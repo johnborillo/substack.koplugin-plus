@@ -130,11 +130,17 @@ function SubstackPostViewer:init()
     -- Using default if global G_reader_settings not available, just purely mostly for safety
     local header_font = (G_reader_settings and G_reader_settings:readSetting("header_font")) or "Noto Sans"
     
+    local css = READER_CSS .. string.format("\n* { line-height: %.1f; }", self.line_spacing)
+    if not self.show_images then
+        css = css .. "\nimg { display: none !important; }"
+        css = css .. "\nfigure { display: none !important; }"
+    end
+
     self.scroll_html_w = ScrollHtmlWidget:new {
         width = self.width,
         height = content_h,
         html_body = self.html_body_inner,
-        css = READER_CSS .. string.format("\n* { line-height: %.1f; }", self.line_spacing),
+        css = css,
         default_font_size = Screen:scaleBySize(self.font_size),
         margin_w = 0,
         margin_h = 0,

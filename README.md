@@ -39,6 +39,10 @@ Place the contents of this repo in the plugins folder of koreader, within a fold
 - **Force Offline Mode**: A setting to disable network requests and use only cached data.
 - **Post Limit**: Adjustable limit (1-100) for how many posts are fetched in lists.
 - **Cache Management**: Option to clear all downloaded images, posts, and API response caches.
+- **Network Robustness**: Automatically retries failed requests (due to flaky connections) with exponential backoff.
+
+### System Integration
+- **Gesture Support**: Support for registering "Substack Reader" as a gesture or QuickMenu action (KOReader Dispatcher).
 
 ## Setup
 
@@ -54,6 +58,8 @@ The plugin requires a `substack.sid` session cookie to authenticate requests.
 1. Create a `substack_cookie.txt` file.
 2. Paste the cookie value into the file (ensure it is the decoded string).
 3. Save the file to `koreader/settings/substack_cookie.txt` on your device.
+
+**Note**: This file is the **authoritative source** for authentication. If you rename or delete it, the plugin will immediately log out/clear its session.
 
 ## Usage
 

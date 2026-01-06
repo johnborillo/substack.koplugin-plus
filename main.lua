@@ -1,6 +1,7 @@
 local InfoMessage = require("ui/widget/infomessage")
 local Menu = require("ui/widget/menu")
 local UIManager = require("ui/uimanager")
+local Dispatcher = require("dispatcher")
 local WidgetContainer = require("ui/widget/container/widgetcontainer")
 local InputContainer = require("ui/widget/container/inputcontainer")
 local ConfirmBox = require("ui/widget/confirmbox")
@@ -37,7 +38,7 @@ local Blitbuffer = require("ffi/blitbuffer")
 
 
 
-local Blitbuffer = require("ffi/blitbuffer")
+
 
 
 
@@ -47,6 +48,15 @@ local SubstackReader = WidgetContainer:extend {
 }
 
 local APP_TITLE = _("Substack Reader")
+
+function SubstackReader:onDispatcherRegisterActions()
+    Dispatcher:registerAction("substack_open", {
+        category = "none",
+        event = "SubstackOpen",
+        title = APP_TITLE,
+        general = true,
+    })
+end
 
 function SubstackReader:init()
     self.settings_file = DataStorage:getSettingsDir() .. "/substack_settings.json"
@@ -61,6 +71,7 @@ function SubstackReader:init()
     self:loadSettings()
     self.api = SubstackAPI:new(self.settings.cookie)
     self.db = SubstackDB:new(self.db_file)
+    self:onDispatcherRegisterActions()
     self.ui.menu:registerToMainMenu(self)
 
     if not lfs.attributes(self.pub_posts_dir) then lfs.mkdir(self.pub_posts_dir) end
@@ -73,6 +84,10 @@ function SubstackReader:addToMainMenu(menu_items)
         sorting_hint = "tools",
         callback = function() self:onSubstackMain() end,
     }
+end
+
+function SubstackReader:onSubstackOpen()
+    self:onSubstackMain()
 end
 
 
@@ -90,11 +105,10 @@ function SubstackReader:loadSettings()
 
 
     -- Load cookie from substack_cookie.txt
+    -- This file is the source of truth. If it exists, we use it. 
+    -- If it's missing or empty, we must clear any cached cookie to ensure we don't use stale credentials.
     local cookie = SubstackUtils.read_txt(self.cookie_file)
-
-    if cookie and cookie ~= "" then
-        self.settings.cookie = cookie
-    end
+    self.settings.cookie = cookie
 
     -- Update API with loaded cookie
     if self.api then
@@ -128,7 +142,7 @@ function SubstackReader:onSubstackMain()
         {
             text = _("Post Limit: ") .. self.settings.post_limit,
             callback = function()
-                local InputDialog = require("ui/widget/inputdialog")
+
                 local limit_input
                 limit_input = InputDialog:new {
                     title = _("Set Post Limit"),
@@ -186,43 +200,7 @@ end
 
 
 
-local function get_pub_name(post, pub_map)
-    local p = post.post or post
-    local pid = p.publication_id or post.publication_id
-    if pid and pub_map and pub_map[tostring(pid)] then
-        return pub_map[tostring(pid)]
-    end
 
-    local url = p.canonical_url or p.url or post.canonical_url or post.url
-    if not url or type(url) ~= "string" then return "Substack" end
-
-    -- Fallback: Remove protocol (https://, http://) and www.
-    local clean = string.gsub(string.gsub(url, "^https?://", ""), "^www%.", "")
-    -- Keep only the domain part (everything before the first /)
-    return string.match(clean, "^([^/]+)") or clean
-end
-
-local function get_ordinal(n)
-    local last_digit = n % 10
-    if n >= 11 and n <= 13 then return "th" end
-    if last_digit == 1 then return "st" end
-    if last_digit == 2 then return "nd" end
-    if last_digit == 3 then return "rd" end
-    return "th"
-end
-
-local months = {
-    "January", "February", "March", "April", "May", "June",
-    "July", "August", "September", "October", "November", "December"
-}
-
-local function format_date(iso_date)
-    if not iso_date or iso_date == "" then return nil end
-    local y, m, d = string.match(iso_date, "^(%d+)-(%d+)-(%d+)")
-    if not y or not m or not d then return nil end
-    y, m, d = tonumber(y), tonumber(m), tonumber(d)
-    return string.format("%d%s %s %d", d, get_ordinal(d), months[m], y)
-end
 
 function SubstackReader:checkOffline(callback)
     if self:isOnline() then
@@ -353,7 +331,7 @@ function SubstackReader:showPostList(mode, is_cached)
                 local p_info = post.post or post
                 local title = p_info.title or "Untitled"
                 local pub_id = tostring(p_info.publication_id or post.publication_id or "")
-                local pub_name = get_pub_name(post, pub_map)
+                local pub_name = SubstackUtils.get_pub_name(post, pub_map)
                 local subdomain = pub_domain_map[pub_id]
 
                 local is_locally_cached = self:isPostCached(post)
@@ -618,7 +596,7 @@ function SubstackReader:renderPost(post, pub_name, subdomain)
 
     local subtitle_html = ""
     if fp.subtitle and fp.subtitle ~= "" then subtitle_html = "<p class='header-subtitle'>" .. fp.subtitle .. "</p>" end
-    local date_text = format_date(fp.post_date)
+    local date_text = SubstackUtils.format_date(fp.post_date)
     if date_text then subtitle_html = subtitle_html .. "<p class='header-date'>" .. date_text .. "</p>" end
     if pub_name then subtitle_html = subtitle_html .. "<div class='publication'>" .. pub_name .. "</div>" end
 
