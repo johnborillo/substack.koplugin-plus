@@ -1,82 +1,107 @@
 # Substack Reader for KOReader
 
-A plugin for KOReader that allows fetching and reading Substack posts.
+An unofficial, reading-first Substack client for KOReader. Browse your latest and
+saved posts, organize publications, search downloads, and read offline.
 
-## Data privacy
+## Highlights
 
-**This plugin uses the cookie that is generated from a logged in substack account. You place the cookie in your koreader device. At no point do I have any knowledge of your cookie. The cookie is embedded in any HTTP requests to the substack official servers, just like when you the substack official app or website. From the point of view of substack, they do not know that you are using a KOReader plugin.**
-
-## Substack plugin main menu
-
-![Plugin Main menu](plugin_menu.png "Plugin Main menu")
-
-## Location of Substack Plugin when installed
-
-![Plugin Location](plugin_location.png "Plugin Location")
-
+- Latest, Saved, Publications, Continue Reading, and downloaded-post search.
+- Comfortable and compact feed layouts with publication/date context, unread state,
+  and offline indicators.
+- Per-post hold actions: mark read/unread, refresh, or remove the offline copy.
+- Offline sync with optional images, progress reporting, and automatic cached fallback.
+- Persistent reading position, typography controls, next/previous navigation, and favourites.
+- Transactional SQLite cache with storage statistics and schema migration.
 
 ## Install
 
-Place the contents of this repo in the plugins folder of koreader, within a folder called `substack.koplugin`
+Copy the complete `substack.koplugin` directory into KOReader's `plugins` directory,
+then restart KOReader. The resulting path must end in:
 
-## Features
+```text
+koreader/plugins/substack.koplugin/main.lua
+```
 
-### Content Fetching & Display
-- **Inbox & Saved Posts**: Retrieve lists of recent and bookmarked posts.
-- **Subscriptions**: View a list of all subscribed publications.
-- **Post Rendering**: Converts Substack content to a clean HTML format suitable for KOReader's internal viewer.
-- **Metadata**: Displays publication name, post title, subtitle, and date (formatted as "Dayth Month Year").
-- **Images**: Automatically downloads images and allows clicking them to open in KOReader's full-screen viewer.
-- **Image Toggle**: Quickly toggle images on/off within the post viewer.
-- **Text Adjustment**: Adjustable font size and line spacing for comfortable reading.
+This release expects a current KOReader build with SQLite UPSERT support and the
+standard `socketutil`, `ScrollHtmlWidget`, and `Menu` APIs.
 
-### Newsletter Management
-- **Favourites**: Mark specific newsletters as favorites to keep them at the top of the subscription list.
-- **Manage Mode**: A dedicated mode in the Subscriptions menu to toggle favorite status via clicks.
+## Sign in
 
-### Offline & Cache
-- **Caching**: Posts and images are stored locally after the first fetch.
-- **Force Offline Mode**: A setting to disable network requests and use only cached data.
-- **Post Limit**: Adjustable limit (1-100) for how many posts are fetched in lists.
-- **Cache Management**: Option to clear all downloaded images, posts, and API response caches.
-- **Network Robustness**: Automatically retries failed requests (due to flaky connections) with exponential backoff.
+This plugin uses the `substack.sid` session cookie from a signed-in browser.
+Treat this value like a password: anyone who obtains it may be able to access your
+Substack account.
 
-### System Integration
-- **Gesture Support**: Support for registering "Substack Reader" as a gesture or QuickMenu action (KOReader Dispatcher).
+1. Sign in at `https://substack.com` in a desktop browser.
+2. Open the browser's developer tools and locate cookies for `substack.com`.
+3. Copy only the value of `substack.sid`.
+4. Put that value in `koreader/settings/substack_cookie.txt` on the device.
+5. Open **Substack Reader → Settings → Account** to test it.
 
-## Setup
+Removing the file and reopening Substack Reader removes the credential from the
+active client. Changing regular plugin settings does not copy the cookie elsewhere.
 
-The plugin requires a `substack.sid` session cookie to authenticate requests.
+## Privacy and network behavior
 
-### 1. Obtain Cookie
-1. Log in to [substack.com](https://substack.com) in a web browser.
-2. Open Developer Tools (F12).
-3. Under the **Application** (Chrome/Edge) or **Storage** (Firefox) tab, find **Cookies** for `https://substack.com`.
-4. Copy the value of the `substack.sid` cookie.
+- The authentication cookie is attached only to HTTPS requests whose host is
+  `substack.com` or a `*.substack.com` publication host.
+- Cross-origin article images are downloaded without authentication.
+- HTTP URLs, HTTPS-to-HTTP redirects, URL credentials, private-network image hosts,
+  control characters in cookies, and excessive response sizes are blocked.
+- Post content, metadata, images, read state, and reading progress are stored locally
+  in KOReader's settings directory until offline storage is cleared.
 
-### 2. Configuration
-1. Create a `substack_cookie.txt` file.
-2. Paste the cookie value into the file (ensure it is the decoded string).
-3. Save the file to `koreader/settings/substack_cookie.txt` on your device.
+## Interface
 
-**Note**: This file is the **authoritative source** for authentication. If you rename or delete it, the plugin will immediately log out/clear its session.
+- **Continue reading** resumes partially read downloaded posts.
+- **Latest** shows the reader inbox.
+- **Saved** shows remotely saved posts.
+- **Publications** lists followed publications; hold one to toggle its favourite state.
+- **Search downloads** searches locally cached title, publication, and body content.
+- **Sync for offline** downloads the configured number of recent posts.
+- **Settings** controls account status, density, images, sync, post limit, offline mode,
+  and storage.
 
-## Usage
+In a post list, tap to read or hold for post actions. A downward arrow in the
+publication label indicates that an offline copy exists.
 
-Access the **Substack Reader** from the KOReader tools menu.
+## Limitations
 
-- **Recent Posts**: View followed newsletter updates.
-- **Saved Posts**: View posts bookmarked on the Substack account.
-- **Subscriptions**: List all subscribed newsletters. Use **[ Manage Favourites ]** to pin newsletters to the top of the list.
-- **Post Limit**: Change how many items appear in post lists.
-- **Debug: Force Offline**: Toggle to skip network checks.
+Substack does not publish a stable reader API for this use case. Its private web
+endpoints and response shapes may change without notice. The plugin intentionally
+does not perform account-writing operations such as likes, comments, restacks,
+subscriptions, or remote read/archive updates.
 
----
+The HTML sanitizer is designed for KOReader's non-browser HTML widget; it is not a
+general-purpose browser security sanitizer. Audio and video posts are not downloaded.
 
-## See also
+## Troubleshooting
 
-- [substack_api](https://github.com/NHagar/substack_api/tree/master/substack_api)
+- **Sign-in needed:** recreate `substack_cookie.txt` with a current `substack.sid` value.
+- **Refresh failed; showing downloaded data:** the network or Substack endpoint failed,
+  but the last local response is still usable.
+- **Partial publications:** the dedicated subscription endpoints failed, so the plugin
+  derived publications from recent inbox posts.
+- **Images unavailable:** the asset was insecure, private, too large, unsupported, or
+  failed to download.
 
-## Attribution
+## Tests
 
-This plugin was developed in Antigravity using Gemini.
+With Lua installed, run this from the directory containing the plugin:
+
+```sh
+lua substack.koplugin/tests/run.lua substack.koplugin
+```
+
+The test suite stubs KOReader services and exercises URL/authentication policy,
+redirect credential stripping, pagination guards, UTF-8 handling, and HTML cleanup.
+
+## Fork lineage
+
+This project is a maintained fork of
+[anserina/substack.koplugin](https://codeberg.org/anserina/substack.koplugin).
+Version 2.0 adds the redesigned interface, offline library features, and security
+hardening while retaining the original repository history and MIT license.
+
+## License
+
+MIT. See `LICENSE.txt`.

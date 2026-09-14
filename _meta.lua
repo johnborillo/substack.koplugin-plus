@@ -1,8 +1,10 @@
+local _ = require("gettext")
+
 return {
     name = "substack",
-    fullname = "Substack Reader",
-    description = "Read your Substack inbox and saved posts.",
-    author = "User",
+    fullname = _("Substack Reader"),
+    description = _("Read, search, and download your Substack posts in KOReader."),
+    author = "anserina and contributors",
     category = "news",
-    version = "1.0.3",
+    version = "2.0.0",
 }

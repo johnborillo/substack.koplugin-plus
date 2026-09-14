@@ -1,152 +1,190 @@
 local SubstackClient = require("substack_client")
+local SubstackURL = require("substack_url")
 local logger = require("logger")
 
 local SubstackAPI = {}
 
 function SubstackAPI:new(cookie)
-    local obj = {
-        client = SubstackClient:new(cookie)
-    }
-    setmetatable(obj, SubstackAPI)
-    return obj
+    return setmetatable({ client = SubstackClient:new(cookie) }, self)
 end
 
--- Compatibility property for main.lua
 function SubstackAPI.__index(self, key)
-    if key == "cookie" then
-        return rawget(self, "client").cookie
-    end
+    if key == "cookie" then return rawget(self, "client").cookie end
     return SubstackAPI[key]
 end
 
 function SubstackAPI.__newindex(self, key, value)
-    if key == "cookie" then
-        rawget(self, "client").cookie = value
-    else
-        rawset(self, key, value)
-    end
+    if key == "cookie" then rawget(self, "client").cookie = value else rawset(self, key, value) end
 end
 
-function SubstackAPI:request(path)
-    return self.client:request(path)
-end
-
-function SubstackAPI:downloadFile(url, target_path)
-    return self.client:download_file(url, target_path)
-end
-
-function SubstackAPI:downloadData(url)
-    return self.client:download_data(url)
-end
+function SubstackAPI:request(path) return self.client:request(path) end
+function SubstackAPI:downloadFile(url, target_path) return self.client:download_file(url, target_path) end
+function SubstackAPI:downloadData(url) return self.client:download_data(url) end
 
 function SubstackAPI:parseUrl(url)
-    if not url or type(url) ~= "string" then return nil end
-    local scheme, netloc, path = string.match(url, "^(https?://)([^/]+)(/?.*)$")
-    if not scheme then return nil end
-
-    local base = scheme .. netloc
-    local slug = string.match(path, "/p/([^/?#]+)") or string.match(path, "/home/post/p%-([^/?#]+)") or
-    string.match(path, "([^/]+)$")
-    if slug == "" or slug == "/" then slug = nil end
-    return base, slug
+    if type(url) ~= "string" then return nil end
+    local parsed = SubstackURL.parse(url)
+    if not parsed then return nil end
+    local slug = parsed.path:match("/p/([^/?#]+)")
+        or parsed.path:match("/home/post/p%-([^/?#]+)")
+        or parsed.path:match("/([^/?#]+)/?$")
+    return parsed.scheme .. "://" .. parsed.authority, slug
 end
 
-function SubstackAPI:getInbox(limit)
-    return self:request("/reader/posts?limit=" .. (limit or 20) .. "&sort=new")
-end
-
-function SubstackAPI:getSaved(limit)
-    return self:request("/reader/posts?inboxType=saved&limit=" .. (limit or 20))
-end
-
-function SubstackAPI:getSubscriptions()
-    local endpoints = {
-        "/subscriptions",
-        "/reader/followed_publications",
-        "/reader/follows",
-        "/api/v1/profile",
-        "/profile"
-    }
-
-    local user_id
-    local inbox = self:getInbox()
-    if inbox and inbox.inboxItems and inbox.inboxItems[1] then
-        user_id = inbox.inboxItems[1].user_id
-    end
-
-    if user_id then
-        table.insert(endpoints, "/user/" .. tostring(user_id) .. "/public_profile")
-        table.insert(endpoints, "/user/" .. tostring(user_id))
-    end
-
-    local last_err
-    for _, path in ipairs(endpoints) do
-        logger.info("[Substack] Trying subscriptions endpoint: " .. path)
-        local data, err = self:request(path)
-        if data and type(data) == "table" then
-            if data.subscriptions or data.follows or data.publications or (#data > 0) then
-                logger.info("[Substack] Success on endpoint: " .. path)
-                return data
+local function append_unique(target, values, seen, id_getter, limit)
+    if type(values) ~= "table" then return 0 end
+    local added = 0
+    for _, value in ipairs(values) do
+        if type(value) == "table" then
+            local id = tostring(id_getter(value) or "")
+            if id == "" or not seen[id] then
+                if id ~= "" then seen[id] = true end
+                table.insert(target, value)
+                added = added + 1
+                if limit and #target >= limit then break end
             end
-            logger.info("[Substack] Endpoint " .. path .. " returned data but no subscriptions found in it.")
-        else
-            logger.info("[Substack] Endpoint " .. path .. " failed: " .. tostring(err))
-            last_err = err
+        end
+    end
+    return added
+end
+
+function SubstackAPI:_getReaderPosts(limit, inbox_type)
+    limit = math.max(1, math.min(100, tonumber(limit) or 20))
+    local posts, publications, inbox_items = {}, {}, {}
+    local seen_posts, seen_publications = {}, {}
+    local offset, page = 0, 0
+    local max_pages = math.ceil(limit / 20) + 2
+    local warning
+
+    while #posts < limit and page < max_pages do
+        page = page + 1
+        local request_limit = math.min(20, limit - #posts)
+        local type_query = inbox_type and ("&inboxType=" .. inbox_type) or "&sort=new"
+        local path = string.format("/reader/posts?limit=%d&offset=%d%s", request_limit, offset, type_query)
+        local data, err = self:request(path)
+        if type(data) ~= "table" then
+            if #posts == 0 then return nil, err end
+            warning = err
+            break
+        end
+
+        local page_posts = type(data.posts) == "table" and data.posts or {}
+        if #page_posts == 0 then break end
+        local added = append_unique(posts, page_posts, seen_posts, function(value)
+            return (value.post and value.post.id) or value.id or (value.post and value.post.slug) or value.slug
+        end, limit)
+        append_unique(publications, data.publications, seen_publications, function(value)
+            return value.id or value.subdomain or value.name
+        end)
+        if type(data.inboxItems) == "table" then
+            for _, item in ipairs(data.inboxItems) do table.insert(inbox_items, item) end
+        end
+
+        offset = offset + #page_posts
+        if #page_posts < request_limit or added == 0 then
+            if added == 0 and #page_posts >= request_limit then warning = "Pagination stopped: endpoint returned no new posts" end
+            break
         end
     end
 
-    return nil, last_err or "Could not find subscriptions after trying all endpoints"
+    return {
+        posts = posts, publications = publications, inboxItems = inbox_items,
+        partial_warning = warning,
+    }
+end
+
+function SubstackAPI:getInbox(limit) return self:_getReaderPosts(limit, nil) end
+function SubstackAPI:getSaved(limit) return self:_getReaderPosts(limit, "saved") end
+
+function SubstackAPI:getSubscriptions()
+    local endpoints = {
+        "/reader/follows", "/subscriptions", "/reader/followed_publications", "/profile",
+    }
+    local last_error
+    for _, path in ipairs(endpoints) do
+        local data, err = self:request(path)
+        if type(data) == "table" then
+            local has_items = (type(data.publications) == "table" and #data.publications > 0)
+                or (type(data.subscriptions) == "table" and #data.subscriptions > 0)
+                or (type(data.follows) == "table" and #data.follows > 0)
+                or #data > 0
+            if has_items then return data end
+        end
+        last_error = err or last_error
+        if type(err) == "string" and (err:match("HTTP 401") or err:match("HTTP 403")) then return nil, err end
+    end
+
+    logger.info("[Substack] Subscription endpoints unavailable; using publications from the recent feed")
+    local inbox, err = self:_getReaderPosts(100, nil)
+    if inbox and #inbox.publications > 0 then
+        return { publications = inbox.publications, is_partial = true }
+    end
+    return nil, last_error or err or "Could not retrieve subscriptions"
 end
 
 function SubstackAPI:getPublicationPosts(subdomain, limit)
-    if not subdomain then return nil, "No subdomain provided" end
-    return self:request(string.format("https://%s.substack.com/api/v1/posts?limit=%d&sort=new", subdomain, limit or 20))
+    if not SubstackURL.validSubdomain(subdomain) then return nil, "Invalid publication subdomain" end
+    limit = math.max(1, math.min(100, tonumber(limit) or 20))
+    local posts, seen = {}, {}
+    local offset, page = 0, 0
+    local max_pages = math.ceil(limit / 20) + 2
+    while #posts < limit and page < max_pages do
+        page = page + 1
+        local request_limit = math.min(20, limit - #posts)
+        local url = string.format("https://%s.substack.com/api/v1/posts?limit=%d&offset=%d&sort=new", subdomain, request_limit, offset)
+        local data, err = self:request(url)
+        if type(data) ~= "table" then
+            if #posts == 0 then return nil, err end
+            return { posts = posts, partial_warning = err }
+        end
+        local page_posts = type(data.posts) == "table" and data.posts or data
+        if type(page_posts) ~= "table" or #page_posts == 0 then break end
+        local added = append_unique(posts, page_posts, seen, function(value)
+            return (value.post and value.post.id) or value.id or (value.post and value.post.slug) or value.slug
+        end, limit)
+        offset = offset + #page_posts
+        if #page_posts < request_limit or added == 0 then break end
+    end
+    return { posts = posts }
 end
 
 function SubstackAPI:getPostByUrl(url, id, subdomain, slug)
     if not url and not id and not slug then return nil, "No identifiers provided" end
-
-    local entries = {}
-    local function add(c)
-        if not c or c == "" or c == "/" then return end
-        c = tostring(c)
-        for _, v in ipairs(entries) do if v == c then return end end
-        table.insert(entries, c)
-    end
-    local _, u_slug = self:parseUrl(url)
-    add(slug); add(u_slug); add(id)
-
-    local errors = {}
-    local tried = {}
-    local function try_p(path)
-        if tried[path] then return end
-        tried[path] = true
-        local res, err = self:request(path)
-        if res then return res end
-        table.insert(errors, string.format("%s: %s", path, tostring(err or "error")))
-    end
-
-    -- 1. Try subdomain-specific API
-    if subdomain then
-        for _, c in ipairs(entries) do
-            local res = try_p("https://" .. subdomain .. ".substack.com/api/v1/posts/" .. c)
-            if res then return res end
+    local entries, seen_entries = {}, {}
+    local function add(value)
+        value = tostring(value or "")
+        if value ~= "" and value ~= "/" and not seen_entries[value] then
+            seen_entries[value] = true
+            table.insert(entries, SubstackURL.escapePathSegment(value))
         end
     end
+    local _, url_slug = self:parseUrl(url)
+    add(slug); add(url_slug); add(id)
 
-    -- 2. Try generic posts API
-    for _, c in ipairs(entries) do
-        local res = try_p("/posts/" .. c)
-        if res then return res end
+    local errors, tried = {}, {}
+    local function try_path(path)
+        if tried[path] then return nil end
+        tried[path] = true
+        local result, err = self:request(path)
+        if result then return result end
+        table.insert(errors, tostring(err or "request failed"))
     end
 
-    -- 3. Try reader API as fallback
+    if SubstackURL.validSubdomain(subdomain) then
+        for _, entry in ipairs(entries) do
+            local result = try_path("https://" .. subdomain .. ".substack.com/api/v1/posts/" .. entry)
+            if result then return result end
+        end
+    end
+    for _, entry in ipairs(entries) do
+        local result = try_path("/posts/" .. entry)
+        if result then return result end
+    end
     if id then
-        local res = try_p("/reader/posts/" .. tostring(id))
-        if res then return res end
+        local result = try_path("/reader/posts/" .. SubstackURL.escapePathSegment(id))
+        if result then return result end
     end
-
-    return nil, "Post fetch failed:\n" .. table.concat(errors, "\n")
+    return nil, "Post fetch failed: " .. table.concat(errors, "; ")
 end
 
 return SubstackAPI

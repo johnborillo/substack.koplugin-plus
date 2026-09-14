@@ -1,153 +1,169 @@
 local https = require("ssl.https")
-local ltn12 = require("ltn12")
-local JSON = (package.loaded["json"] or (pcall(require, "json") and require("json")) or require("util").json)
+local socket = require("socket")
+local socketutil = require("socketutil")
+local JSON = require("json")
 local logger = require("logger")
+local SubstackURL = require("substack_url")
 
-local USER_AGENT =
-"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.77 Safari/537.36"
+local USER_AGENT = "KOReader-Substack/2.0"
+local API_MAX_BYTES = 8 * 1024 * 1024
+local IMAGE_MAX_BYTES = 20 * 1024 * 1024
+local BLOCK_TIMEOUT = 10
+local TOTAL_TIMEOUT = 45
 
 local SubstackClient = {}
+SubstackClient.__index = SubstackClient
+
+local function is_auth_destination(parsed)
+    return parsed and parsed.scheme == "https" and SubstackURL.isSubstackHost(parsed.host)
+        and (parsed.port == nil or parsed.port == 443)
+end
+
+local function bounded_sink(chunks, max_bytes)
+    local size = 0
+    local sink = socketutil.table_sink(chunks)
+    return function(chunk, err)
+        if chunk then
+            size = size + #chunk
+            if size > max_bytes then return nil, "response_too_large" end
+        end
+        return sink(chunk, err)
+    end
+end
 
 function SubstackClient:new(cookie)
-    local obj = {
-        cookie = cookie,
-        base_url = "https://substack.com/api/v1"
-    }
-    setmetatable(obj, self)
-    self.__index = self
-    return obj
+    return setmetatable({ cookie = cookie, base_url = "https://substack.com/api/v1" }, self)
 end
 
 function SubstackClient:_get_cookie_header()
-    local cookie_header = self.cookie
-    if not cookie_header or cookie_header == "" then return nil end
-    if not string.match(cookie_header, "=") then
-        cookie_header = "substack.sid=" .. cookie_header
-    end
-    return cookie_header
+    local raw = self.cookie
+    if type(raw) ~= "string" or raw == "" then return nil, "Authentication cookie missing" end
+    if raw:find("[%c%s]") then return nil, "Authentication cookie contains invalid whitespace" end
+    local sid = raw:match("^substack%.sid=([^;]+)")
+        or raw:match("[;]substack%.sid=([^;]+)")
+        or (not raw:find(";", 1, true) and raw)
+    if not sid or sid == "" then return nil, "substack.sid cookie missing" end
+    return "substack.sid=" .. sid
 end
 
-function SubstackClient:raw_request(path_or_url, sink)
-    local current_url = path_or_url
-    if type(current_url) ~= "string" then return nil, "Invalid URL" end
+function SubstackClient:_prepare_url(path_or_url)
+    if type(path_or_url) ~= "string" then return nil, "Invalid URL" end
+    if path_or_url:match("^https?://") then return path_or_url end
+    if path_or_url:sub(1, 1) ~= "/" then return nil, "API path must start with /" end
+    return self.base_url .. path_or_url
+end
 
-    -- STRICT COOKIE CHECK
-    local cookie_header = self:_get_cookie_header()
-    if not cookie_header then
-        return nil, "Authentication cookie missing. Please check substack_cookie.txt"
+function SubstackClient:_headers_for(url, authenticated)
+    local parsed = SubstackURL.parse(url)
+    if not parsed or parsed.scheme ~= "https" then return nil, "Only HTTPS requests are allowed" end
+    if authenticated and not is_auth_destination(parsed) then
+        return nil, "Refusing to send credentials outside Substack"
+    end
+    if not authenticated and SubstackURL.isPrivateHost(parsed.host) then
+        return nil, "Refusing to download from a private network host"
+    end
+    local headers = { ["Accept-Encoding"] = "identity", ["User-Agent"] = USER_AGENT }
+    if authenticated then
+        local cookie, err = self:_get_cookie_header()
+        if not cookie then return nil, err .. ". Please check substack_cookie.txt" end
+        headers["Cookie"] = cookie
+    end
+    return headers
+end
+
+function SubstackClient:raw_request(path_or_url, options)
+    options = options or {}
+    local authenticated = options.authenticated ~= false
+    local max_bytes = options.max_bytes or API_MAX_BYTES
+    local current_url, url_err = self:_prepare_url(path_or_url)
+    if not current_url then return nil, url_err end
+    local initial = SubstackURL.parse(current_url)
+    if not initial or initial.scheme ~= "https" then return nil, "Only HTTPS requests are allowed" end
+    if authenticated and not is_auth_destination(initial) then
+        return nil, "Refusing authenticated request outside Substack"
     end
 
-    if not string.match(current_url, "^https?://") then
-        current_url = self.base_url .. path_or_url
-    end
-
-    local headers = {
-        ["User-Agent"] = USER_AGENT,
-        ["Cookie"] = cookie_header,
-    }
-
-    local max_redirects = 5
-    local retries_delays = { 0.25, 0.5, 1.0 } -- Delays after 1st, 2nd, 3rd failure
-    local max_retries = #retries_delays + 1 -- Total attempts = 1 initial + 3 retries
-    local attempt = 0
-
-    while attempt < max_retries do
-        attempt = attempt + 1
-        
-        -- Reset redirect count for this attempt
-        local redirect_count = 0
+    local retry_delays = { 0.5, 1.0, 2.0 }
+    local last_error
+    for attempt = 1, #retry_delays + 1 do
         local attempt_url = current_url
-        local last_code, last_body
+        for redirect_count = 0, 5 do
+            local parsed = SubstackURL.parse(attempt_url)
+            local send_auth = authenticated and is_auth_destination(parsed)
+            local headers, header_err = self:_headers_for(attempt_url, send_auth)
+            if not headers then return nil, header_err end
 
-        while redirect_count < max_redirects do
-            local response_body = {}
-            local request_sink = sink or ltn12.sink.table(response_body)
-
-            local res, code, response_headers, status = https.request({
-                url = attempt_url,
-                method = "GET",
-                headers = headers,
-                sink = request_sink,
+            local chunks = {}
+            socketutil:set_timeout(BLOCK_TIMEOUT, TOTAL_TIMEOUT)
+            local ok, res, code, response_headers, status = pcall(https.request, {
+                url = attempt_url, method = "GET", headers = headers, redirect = false,
+                sink = bounded_sink(chunks, max_bytes),
             })
+            socketutil:reset_timeout()
+            if not ok then last_error = tostring(res); break end
+            if not res then last_error = tostring(code or status or "Network error"); break end
 
-            if not res then
-                last_code = code or status or "Network error"
-                break -- Network error, retry outer loop by breaking inner loop
-            end
-
-            -- Redirect handling
-            if code == 301 or code == 302 or code == 307 or code == 308 then
-                attempt_url = response_headers["location"]
-                if not attempt_url then break end
-                redirect_count = redirect_count + 1
-            elseif code == 400 or code >= 500 then
-                -- Transient error candidate
-                last_code = code
-                last_body = response_body
-                logger.warn("[Substack] HTTP " .. tostring(code) .. " on " .. attempt_url .. " - Attempt " .. attempt .. " failed")
-                break -- Break inner loop to trigger retry check
+            code = tonumber(code)
+            if code == 301 or code == 302 or code == 303 or code == 307 or code == 308 then
+                if redirect_count == 5 then return nil, "Too many redirects" end
+                local next_url = SubstackURL.resolve(attempt_url, response_headers and response_headers.location)
+                local next_parsed = SubstackURL.parse(next_url)
+                if not next_parsed or next_parsed.scheme ~= "https" then return nil, "Unsafe redirect blocked" end
+                attempt_url = next_url
+            elseif code == 429 or (code and code >= 500 and code <= 599) then
+                last_error = "HTTP " .. tostring(code)
+                break
             else
-                -- Success or permanent client error (e.g. 404, 401, 403)
-                return code, response_body
+                return code, chunks, response_headers
             end
         end
-
-        if attempt < max_retries then
-            local delay = retries_delays[attempt]
-            if delay then
-                logger.warn("[Substack] Retrying in " .. delay .. "s...")
-                require("ffi/unistd").sleep(delay)
-            end
+        if attempt <= #retry_delays then
+            local delay = retry_delays[attempt]
+            logger.warn("[Substack] Request failed; retrying in", delay, "seconds:", last_error)
+            if socket and socket.sleep then socket.sleep(delay) end
         end
     end
-
-    return nil, "Request failed after " .. attempt .. " attempts"
+    return nil, "Request failed after retries (" .. tostring(last_error or "unknown error") .. ")"
 end
 
 function SubstackClient:request(path)
-    local code, body_or_err = self:raw_request(path)
-
-    if type(body_or_err) == "table" then
-        local body_str = table.concat(body_or_err)
-        local ok, decoded = pcall(JSON.decode, body_str)
-
-        if code == 200 then
-            if ok then return decoded end
-            return nil, "JSON decode failed"
-        else
-            -- Check for Substack error messages in JSON
-            if ok and decoded and decoded.errors and decoded.errors[1] and decoded.errors[1].msg then
-                return nil, string.format("HTTP %s on %s: %s", tostring(code), path, decoded.errors[1].msg)
-            end
-            return nil, string.format("HTTP %s on %s", tostring(code), path)
-        end
+    local code, chunks_or_error = self:raw_request(path, { authenticated = true, max_bytes = API_MAX_BYTES })
+    if type(chunks_or_error) ~= "table" then return nil, tostring(chunks_or_error or "Unknown error") end
+    local body = table.concat(chunks_or_error)
+    local ok, decoded = pcall(JSON.decode, body)
+    if code and code >= 200 and code <= 299 then
+        if ok then return decoded end
+        return nil, "JSON decode failed"
     end
-
-    return nil, tostring(body_or_err or "Unknown error")
-end
-
-function SubstackClient:download_file(url, target_path)
-    local file = io.open(target_path, "wb")
-    if not file then return false end
-
-    local code, body_or_err = self:raw_request(url, ltn12.sink.file(file))
-
-    if io.type(file) == "file" then file:close() end
-
-    if code == 200 then
-        return true
+    if ok and type(decoded) == "table" and decoded.errors and decoded.errors[1] then
+        return nil, string.format("HTTP %s: %s", tostring(code), tostring(decoded.errors[1].msg or "request failed"))
     end
-    os.remove(target_path)
-    return false
+    return nil, "HTTP " .. tostring(code or "unknown")
 end
 
 function SubstackClient:download_data(url)
-    local code, body_or_err = self:raw_request(url)
-
-    if code == 200 and type(body_or_err) == "table" then
-        return table.concat(body_or_err)
+    if not SubstackURL.isSafeExternal(url) then return nil, "Unsafe image URL" end
+    local code, chunks_or_error = self:raw_request(url, { authenticated = false, max_bytes = IMAGE_MAX_BYTES })
+    if code and code >= 200 and code <= 299 and type(chunks_or_error) == "table" then
+        return table.concat(chunks_or_error)
     end
-    return nil, tostring(body_or_err or "Download failed")
+    return nil, tostring(chunks_or_error or "Download failed")
+end
+
+function SubstackClient:download_file(url, target_path)
+    local data, err = self:download_data(url)
+    if not data then return false, err end
+    local temporary_path = target_path .. ".part"
+    local file = io.open(temporary_path, "wb")
+    if not file then return false, "Unable to open temporary file" end
+    local ok = file:write(data)
+    file:close()
+    if not ok then os.remove(temporary_path); return false, "Unable to write file" end
+    if not os.rename(temporary_path, target_path) then
+        os.remove(temporary_path)
+        return false, "Unable to finalize file"
+    end
+    return true
 end
 
 return SubstackClient
